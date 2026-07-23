@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Four-Bar Linkage Synthesis | ME 252</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#f5f5f0;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;color:#1a1a1a;overflow:hidden;}
+input[type="range"]{-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#d4d4d4;border-radius:3px;outline:none;}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#2563eb;cursor:pointer;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
+input[type="range"]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#2563eb;cursor:pointer;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
+input[type="number"]{padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;font-family:'Consolas','Fira Code',monospace;background:#fff;color:#1a1a1a;text-align:right;}
+input[type="number"]:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,0.15);}
+::-webkit-scrollbar{width:6px;}::-webkit-scrollbar-track{background:#eee;}::-webkit-scrollbar-thumb{background:#bbb;border-radius:3px;}
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+// ================================================================
+// 2D MATH
+// ================================================================
+const dist=(a,b)=>Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);
+const mid=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
+const sub=(a,b)=>({x:a.x-b.x,y:a.y-b.y});
+const add=(a,b)=>({x:a.x+b.x,y:a.y+b.y});
+const scl=(v,s)=>({x:v.x*s,y:v.y*s});
+const nrm=v=>{const l=Math.sqrt(v.x*v.x+v.y*v.y);return l<1e-12?{x:0,y:0}:{x:v.x/l,y:v.y/l};};
+const prp=v=>({x:-v.y,y:v.x});
+const rot2=(p,a)=>({x:p.x*Math.cos(a)-p.y*Math.sin(a),y:p.x*Math.sin(a)+p.y*Math.cos(a)});
+const ang2=p=>Math.atan2(p.y,p.x);
+
+function ccInt(c1,r1,c2,r2){
+  const d=dist(c1,c2);if(d>r1+r2+1e-9||d<Math.abs(r1-r2)-1e-9||d<1e-12)return null;
+  const a=(r1*r1-r2*r2+d*d)/(2*d);const hSq=r1*r1-a*a;if(hSq<-1e-9)return null;
+  const h=Math.sqrt(Math.max(0,hSq));const dir=nrm(sub(c2,c1));const p=add(c1,scl(dir,a));const n=prp(dir);
+  return[add(p,scl(n,h)),add(p,scl(n,-h))];
+}
+function circumcenter(a,b,c){
+  const D=2*(a.x*(b.y-c.y)+b.x*(c.y-a.y)+c.x*(a.y-b.y));if(Math.abs(D)<1e-10)return null;
+  return{x:((a.x*a.x+a.y*a.y)*(b.y-c.y)+(b.x*b.x+b.y*b.y)*(c.y-a.y)+(c.x*c.x+c.y*c.y)*(a.y-b.y))/D,
+         y:((a.x*a.x+a.y*a.y)*(c.x-b.x)+(b.x*b.x+b.y*b.y)*(a.x-c.x)+(c.x*c.x+c.y*c.y)*(b.x-a.x))/D};
+}
+
+// ================================================================
+// COMPLEX NUMBER MATH (for Burmester)
+// ================================================================
+const Z={
+  mk:(r,i=0)=>({r,i}), re:z=>z.r, im:z=>z.i,
+  add:(a,b)=>({r:a.r+b.r,i:a.i+b.i}), sub:(a,b)=>({r:a.r-b.r,i:a.i-b.i}),
+  mul:(a,b)=>({r:a.r*b.r-a.i*b.i,i:a.r*b.i+a.i*b.r}),
+  conj:a=>({r:a.r,i:-a.i}), abs2:a=>a.r*a.r+a.i*a.i,
+  abs:a=>Math.sqrt(a.r*a.r+a.i*a.i), arg:a=>Math.atan2(a.i,a.r),
+  exp:th=>({r:Math.cos(th),i:Math.sin(th)}),
+  div:(a,b)=>{const d=b.r*b.r+b.i*b.i;return{r:(a.r*b.r+a.i*b.i)/d,i:(a.i*b.r-a.r*b.i)/d};},
+  scl:(a,s)=>({r:a.r*s,i:a.i*s}), neg:a=>({r:-a.r,i:-a.i}),
+  toP:z=>({x:z.r,y:z.i}), fromP:p=>({r:p.x,i:p.y}),
+};
+
+// ================================================================
+// CONSTANTS
+// ================================================================
+const PAIRS=[[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
+const PLBL=["C₁C₂","C₁C₃","C₁C₄","C₂C₃","C₂C₄","C₃C₄"];
+const PL=["C₁","C₂","C₃","C₄"];
+const DEG=Math.PI/180;
+
+// ================================================================
+// GRAPHICAL METHOD
+// ================================================================
+function buildGraphical(pts,pidx,hrT,R,r,hcT,br){
+  const[i,j]=PAIRS[pidx];const rem=[0,1,2,3].filter(k=>k!==i&&k!==j);const[k1,k2]=rem;
+  const M=mid(pts[i],pts[j]);const d=nrm(sub(pts[j],pts[i]));const n=prp(d);
+  const HR=add(M,scl(n,hrT));
+  const iAi=ccInt(HR,R,pts[i],r);const iAj=ccInt(HR,R,pts[j],r);
+  if(!iAi||!iAj)return{err:"Circles for A don't intersect. Adjust R or r.",HR,M,n};
+  const Ai=iAi[br[0]],Aj=iAj[br[1]];
+  const MA=mid(Ai,Aj);const dA=nrm(sub(Aj,Ai));const nA=prp(dA);
+  const HC=add(MA,scl(nA,hcT));const crankR=dist(HC,Ai);
+  const iAk1=ccInt(HC,crankR,pts[k1],r);const iAk2=ccInt(HC,crankR,pts[k2],r);
+  if(!iAk1||!iAk2)return{err:"Crank circle intersections fail. Adjust params.",HR,HC,M,n,crankR,MA,nA,Ai,Aj};
+  const A=[];A[i]=Ai;A[j]=Aj;A[k1]=iAk1[br[2]];A[k2]=iAk2[br[3]];
+  const refAng=ang2(sub(pts[i],A[i]));
+  const inv_=p=>{const da=ang2(sub(pts[p],A[p]))-refAng;return add(A[i],rot2(sub(HR,A[p]),-da));};
+  const HRi=[0,1,2,3].map(inv_);
+  const B1=circumcenter(HRi[i],HRi[k1],HRi[k2]);
+  if(!B1)return{err:"Degenerate circumcenter for B₁.",HR,HC,A,M,n,crankR,MA,nA};
+  const fR=dist(B1,HRi[i]);
+  const B=[0,1,2,3].map(p=>{const da=ang2(sub(pts[p],A[p]))-refAng;return add(A[p],rot2(sub(B1,A[i]),da));});
+  const gnd=dist(HC,HR),cAB=dist(A[i],B[i]);
+  const abAng=ang2(sub(B[i],A[i]));const Cbody=rot2(sub(pts[i],A[i]),-abAng);
+  return{ok:true,HC,HR,A,B,crankR,fR,cAB,gnd,Cbody,abAng,M,n,MA,nA,HRi,B1,pair:[i,j],rem,
+    gfx:{M,n,MA,nA,HRi,B1,pair:[i,j],rem,R_val:R,r_val:r}};
+}
+
+// ================================================================
+// BURMESTER ANALYTICAL METHOD
+// ================================================================
+function burmester4A(Rpts,phi,gam2,motionOrPath,branchIdx){
+  const Rc=Rpts.map(p=>Z.fromP(p));
+  const delta=Rc.map(r=>Z.sub(r,Rc[0]));
+  const ei=th=>Z.sub(Z.exp(th),Z.mk(1));
+  const D2=Z.sub(Z.mul(delta[2],ei(phi[3])),Z.mul(delta[3],ei(phi[2])));
+  const D3=Z.sub(Z.mul(delta[3],ei(phi[1])),Z.mul(delta[1],ei(phi[3])));
+  const D4=Z.sub(Z.mul(delta[1],ei(phi[2])),Z.mul(delta[2],ei(phi[1])));
+  const D1=Z.sub(Z.sub(Z.mul(ei(gam2),D2),D3),D4);
+  const Av=Z.re(Z.mul(Z.conj(D1),D3));
+  const Bv=Z.im(Z.mul(Z.conj(D1),D3));
+  const Cv=Z.abs2(D1)+Z.abs2(D3)-Z.abs2(D4);
+  const disc=4*Av*Av+4*Bv*Bv-Cv*Cv;
+  if(disc<-1e-9)return null;
+  const sqrtDisc=Math.sqrt(Math.max(0,disc));
+  const denom=Cv-2*Av;
+  if(Math.abs(denom)<1e-12)return null;
+  const gam3_0=2*Math.atan((2*Bv-sqrtDisc)/denom);
+  const gam3_1=2*Math.atan((2*Bv+sqrtDisc)/denom);
+  const gam33=branchIdx===0?gam3_0:gam3_1;
+  const numG4=Z.add(D1,Z.mul(Z.exp(gam33),D3));
+  const denG4=Z.neg(D4);
+  const ratG4=Z.div(numG4,denG4);
+  const gam44=Math.atan2(Z.im(ratG4),Z.re(ratG4));
+  const AA00=ei(phi[1]),AA01=ei(gam2),AA10=ei(phi[2]),AA11=Z.sub(Z.exp(gam33),Z.mk(1));
+  const det=Z.sub(Z.mul(AA00,AA11),Z.mul(AA01,AA10));
+  if(Z.abs(det)<1e-12)return null;
+  const DY0=Z.div(Z.sub(Z.mul(AA11,delta[1]),Z.mul(AA01,delta[2])),det);
+  const DY1=Z.div(Z.sub(Z.mul(AA00,delta[2]),Z.mul(AA10,delta[1])),det);
+  let Z2c,Z3c,GAM,PHI;
+  if(motionOrPath===1){Z2c=DY1;Z3c=DY0;GAM=[0,gam2,gam33,gam44];PHI=[...phi];}
+  else{Z2c=DY0;Z3c=DY1;PHI=[0,gam2,gam33,gam44];GAM=[...phi];}
+  const Z0c=Z.sub(Z.sub(Rc[0],Z2c),Z3c);
+  return{Z0:Z0c,Z2:Z2c,Z3:Z3c,GAM,PHI,gam3:gam33,gam4:gam44};
+}
+
+function buildAnalytical(pts,phiDeg,gam2_1_deg,gam2_2_deg,motionOrPath,br1,br2){
+  const phi=[0,...phiDeg.map(d=>d*DEG)];
+  const g1=gam2_1_deg*DEG,g2=gam2_2_deg*DEG;
+  const d1=burmester4A(pts,phi,g1,motionOrPath,br1);
+  const d2=burmester4A(pts,phi,g2,motionOrPath,br2);
+  if(!d1)return{err:"Dyad 1 fails (discriminant<0 or singular). Adjust γ₂ or φ angles."};
+  if(!d2)return{err:"Dyad 2 fails. Adjust γ₂ or φ angles."};
+  const HC=Z.toP(d1.Z0),HR=Z.toP(d2.Z0);
+  const crankR=Z.abs(d1.Z2),fR=Z.abs(d2.Z2);
+  const A_init=add(HC,Z.toP(d1.Z2));const B_init=add(HR,Z.toP(d2.Z2));
+  const cAB=dist(A_init,B_init);
+  const A=[],B=[];
+  for(let p=0;p<4;p++){
+    const ap=add(HC,Z.toP(Z.mul(d1.Z2,Z.exp(d1.GAM[p]))));
+    const bp=add(HR,Z.toP(Z.mul(d2.Z2,Z.exp(d2.GAM[p]!==undefined?d2.GAM[p]:0))));
+    A[p]=ap;B[p]=bp;
+  }
+  // Recompute B using follower GAM from d2
+  for(let p=0;p<4;p++){
+    B[p]=add(HR,Z.toP(Z.mul(d2.Z2,Z.exp(d2.GAM[p]))));
+  }
+  const abAng=ang2(sub(B_init,A_init));
+  const Cbody=rot2(sub(pts[0],A_init),-abAng);
+  return{ok:true,HC,HR,A,B,crankR,fR,cAB,gnd:dist(HC,HR),Cbody,abAng,
+    dyads:{d1,d2},
+    anl:{d1_configs:A,d2_configs:B,Z0_1:HC,Z0_2:HR}};
+}
+
+// ================================================================
+// FOUR-BAR SOLVER & CURVE TRACER (shared)
+// ================================================================
+function solve4bar(L,theta){
+  const An=add(L.HC,{x:L.crankR*Math.cos(theta),y:L.crankR*Math.sin(theta)});
+  const ib=ccInt(An,L.cAB,L.HR,L.fR);if(!ib)return null;
+  return ib.map(Bn=>{const ab=ang2(sub(Bn,An));return{A:An,B:Bn,C:add(An,rot2(L.Cbody,ab))};});
+}
+function traceCurve(L,n,asmb){
+  const c=[];const sa=ang2(sub(L.A[0],L.HC));let lb=null;
+  for(let k=0;k<=n;k++){const th=sa+(k/n)*Math.PI*2;const s=solve4bar(L,th);if(!s)continue;
+    let sol;if(lb){sol=dist(s[0].B,lb)<dist(s[1].B,lb)?s[0]:s[1];}else{sol=s[asmb]||s[0];}lb=sol.B;c.push(sol.C);}
+  return c;
+}
+
+// ================================================================
+// SVG COORDS
+// ================================================================
+const W=820,HH=600,SC=30,OX=W/2,OY=HH/2+20;
+const toS=p=>({x:OX+p.x*SC,y:OY-p.y*SC});
+const fromS=(sx,sy)=>({x:(sx-OX)/SC,y:-(sy-OY)/SC});
+
+// ================================================================
+// COLORS
+// ================================================================
+const CL={red:"#dc2626",blue:"#2563eb",green:"#16a34a",amber:"#d97706",pink:"#db2777",purple:"#7c3aed",gray:"#6b7280",sky:"#0ea5e9"};
+
+// ================================================================
+// MAIN APP
+// ================================================================
+function App(){
+  const svgRef=useRef(null),animRef=useRef(null);
+  const[tab,setTab]=useState("graphical");
+  const[pts,setPts]=useState([{x:-7,y:0},{x:-5.6,y:2.6},{x:-3.6,y:4.5},{x:0.7,y:5.8}]);
+  // Graphical state
+  const[pidx,setPidx]=useState(1);
+  const[hrT,setHrT]=useState(-3);const[R,setR]=useState(6);const[r,setRr]=useState(4.5);const[hcT,setHcT]=useState(-5);
+  const[br,setBr]=useState([0,0,0,0]);
+  // Analytical state
+  const[mode,setMode]=useState("path");
+  const[phiDeg,setPhiDeg]=useState([12,34,84]);
+  const[gam2_1,setGam2_1]=useState(20);const[gam2_2,setGam2_2]=useState(345);
+  const[abr1,setAbr1]=useState(0);const[abr2,setAbr2]=useState(0);
+  // Shared state
+  const[showCon,setShowCon]=useState(true);const[showCirc,setShowCirc]=useState(true);
+  const[showPath,setShowPath]=useState(true);const[showCfg,setShowCfg]=useState(true);
+  const[anim,setAnim]=useState(false);const[theta,setTheta]=useState(0);
+  const[drag,setDrag]=useState(null);const[asmb,setAsmb]=useState(0);
+
+  // Compute linkage
+  const L=useMemo(()=>{
+    if(tab==="graphical")return buildGraphical(pts,pidx,hrT,R,r,hcT,br);
+    return buildAnalytical(pts,phiDeg,gam2_1,gam2_2,mode==="motion"?1:2,abr1,abr2);
+  },[tab,pts,pidx,hrT,R,r,hcT,br,phiDeg,gam2_1,gam2_2,mode,abr1,abr2]);
+
+  const curve=useMemo(()=>L.ok?traceCurve(L,500,asmb):[],[L,asmb]);
+  const curPos=useMemo(()=>{
+    if(!L.ok)return null;
+    const sa=ang2(sub(L.A[0],L.HC));const s=solve4bar(L,sa+theta);
+    return s?(s[asmb]||s[0]):null;
+  },[L,theta,asmb]);
+
+  useEffect(()=>{
+    if(!anim||!L.ok){if(animRef.current)cancelAnimationFrame(animRef.current);return;}
+    let t=theta;
+    const tick=()=>{t+=0.02;if(t>Math.PI*2)t-=Math.PI*2;setTheta(t);animRef.current=requestAnimationFrame(tick);};
+    animRef.current=requestAnimationFrame(tick);
+    return()=>{if(animRef.current)cancelAnimationFrame(animRef.current);};
+  },[anim,L.ok]);
+
+  const getPos=useCallback(e=>{
+    const rect=svgRef.current.getBoundingClientRect();
+    const cx=e.touches?e.touches[0].clientX:e.clientX;const cy=e.touches?e.touches[0].clientY:e.clientY;
+    return fromS((cx-rect.left)*(W/rect.width),(cy-rect.top)*(HH/rect.height));
+  },[]);
+  const onMove=useCallback(e=>{if(drag===null)return;e.preventDefault();const p=getPos(e);setPts(pv=>{const n=[...pv];n[drag]=p;return n;});},[drag,getPos]);
+  const onUp=useCallback(()=>setDrag(null),[]);
+  const toggleBr=i=>setBr(pv=>{const n=[...pv];n[i]=1-n[i];return n;});
+  const setPtC=(idx,ax,val)=>setPts(pv=>{const n=[...pv];n[idx]={...n[idx],[ax]:val};return n;});
+  const setPhiAt=(i,v)=>setPhiDeg(pv=>{const n=[...pv];n[i]=v;return n;});
+  const vis=sid=>true;
+
+  // ================================================================
+  // SVG ELEMENTS
+  // ================================================================
+  const el=[];
+  // Grid + axes
+  el.push(
+    <defs key="d">
+      <pattern id="g1" width={SC} height={SC} patternUnits="userSpaceOnUse"><path d={`M ${SC} 0 L 0 0 0 ${SC}`} fill="none" stroke="#e0e0e0" strokeWidth={0.5}/></pattern>
+      <pattern id="g5" width={SC*5} height={SC*5} patternUnits="userSpaceOnUse"><path d={`M ${SC*5} 0 L 0 0 0 ${SC*5}`} fill="none" stroke="#c0c0c0" strokeWidth={0.8}/></pattern>
+    </defs>,
+    <rect key="bg" width={W} height={HH} fill="#fafaf8"/>,
+    <rect key="gr1" width={W} height={HH} fill="url(#g1)"/>,
+    <rect key="gr5" width={W} height={HH} fill="url(#g5)"/>,
+    <line key="xa" x1={0} y1={OY} x2={W} y2={OY} stroke="#aaa" strokeWidth={1.2}/>,
+    <line key="ya" x1={OX} y1={0} x2={OX} y2={HH} stroke="#aaa" strokeWidth={1.2}/>,
+  );
+  for(let v=-13;v<=13;v++){if(v===0)continue;
+    const sx=OX+v*SC,sy=OY-v*SC;
+    if(sx>5&&sx<W-5){el.push(<text key={"xl"+v} x={sx} y={OY+16} textAnchor="middle" fontSize="10" fill="#999" fontFamily="monospace">{v}</text>);
+      el.push(<line key={"xt"+v} x1={sx} y1={OY-3} x2={sx} y2={OY+3} stroke="#aaa" strokeWidth={0.8}/>);}
+    if(sy>5&&sy<HH-5){el.push(<text key={"yl"+v} x={OX-14} y={sy+4} textAnchor="end" fontSize="10" fill="#999" fontFamily="monospace">{v}</text>);
+      el.push(<line key={"yt"+v} x1={OX-3} y1={sy} x2={OX+3} y2={sy} stroke="#aaa" strokeWidth={0.8}/>);}
+  }
+  el.push(<text key="O" x={OX+8} y={OY+16} fontSize="11" fill="#888" fontWeight="600">O</text>);
+
+  // CONSTRUCTION (graphical only)
+  if(showCon&&L.ok&&tab==="graphical"&&L.gfx){
+    const g=L.gfx;const gc=[];
+    if(g.M){const s1=toS(add(g.M,scl(g.n,20))),s2=toS(add(g.M,scl(g.n,-20)));
+      gc.push(<line key="mn1" x1={s1.x} y1={s1.y} x2={s2.x} y2={s2.y} stroke={CL.purple} strokeWidth={1.5} strokeDasharray="8 5"/>);
+      const ml=toS(add(g.M,scl(g.n,13)));gc.push(<text key="mnl" x={ml.x+6} y={ml.y} fontSize="15" fill={CL.purple} fontWeight="700" fontStyle="italic">c₁₃</text>);}
+    if(showCirc){
+      const ci=(k,c,rad,col,op=0.5)=>{const s=toS(c);return <circle key={k} cx={s.x} cy={s.y} r={rad*SC} stroke={col} strokeWidth={1.5} fill="none" strokeDasharray="7 4" opacity={op}/>;};
+      gc.push(ci("cr1",L.HR,R,CL.amber));gc.push(ci("cr2",pts[PAIRS[pidx][0]],r,CL.red,0.4));gc.push(ci("cr3",pts[PAIRS[pidx][1]],r,CL.red,0.4));
+      if(L.crankR)gc.push(ci("ckc",L.HC,L.crankR,CL.blue,0.35));
+      if(g.rem){gc.push(ci("rk0",pts[g.rem[0]],r,CL.red,0.3));gc.push(ci("rk1",pts[g.rem[1]],r,CL.red,0.3));}
+    }
+    if(g.MA){const s1=toS(add(g.MA,scl(g.nA,20))),s2=toS(add(g.MA,scl(g.nA,-20)));
+      gc.push(<line key="mn2" x1={s1.x} y1={s1.y} x2={s2.x} y2={s2.y} stroke={CL.sky} strokeWidth={1.5} strokeDasharray="8 5"/>);
+      const al=toS(add(g.MA,scl(g.nA,11)));gc.push(<text key="anl" x={al.x+6} y={al.y} fontSize="15" fill={CL.sky} fontWeight="700" fontStyle="italic">a₁₃</text>);}
+    if(L.HC&&L.HR){const s1=toS(L.HC),s2=toS(L.HR);gc.push(<line key="gl" x1={s1.x} y1={s1.y} x2={s2.x} y2={s2.y} stroke={CL.gray} strokeWidth={2.5} strokeDasharray="8 5"/>);}
+    // A points
+    L.A&&L.A.forEach((a,idx)=>{if(!a)return;const s=toS(a);
+      gc.push(<circle key={"apc"+idx} cx={s.x} cy={s.y} r={4} fill={CL.blue} stroke="#fff" strokeWidth={2}/>);
+      gc.push(<text key={"apl"+idx} x={s.x-22} y={s.y-8} fontSize="14" fill={CL.blue} fontWeight="700" fontStyle="italic" fontFamily="serif">{"A"+(idx+1)}</text>);});
+    el.push(<g key="gcon" opacity={0.7}>{gc}</g>);
+  }
+
+  // CONSTRUCTION (analytical: show dyad configs)
+  if(showCon&&L.ok&&tab==="analytical"&&L.anl){
+    const gc=[];
+    // Show 4 configs for each dyad
+    if(showCfg){
+      [0,1,2,3].forEach(idx=>{
+        const sa=toS(L.HC),sai=toS(L.A[idx]),sci=toS(pts[idx]);
+        gc.push(<line key={"d1c"+idx} x1={sa.x} y1={sa.y} x2={sai.x} y2={sai.y} stroke={CL.red} strokeWidth={2} opacity={0.35} strokeLinecap="round"/>);
+        gc.push(<line key={"d1l"+idx} x1={sai.x} y1={sai.y} x2={sci.x} y2={sci.y} stroke={CL.red} strokeWidth={2} opacity={0.35} strokeLinecap="round"/>);
+        const sb=toS(L.HR),sbi=toS(L.B[idx]);
+        gc.push(<line key={"d2c"+idx} x1={sb.x} y1={sb.y} x2={sbi.x} y2={sbi.y} stroke={CL.blue} strokeWidth={2} opacity={0.35} strokeLinecap="round"/>);
+        gc.push(<line key={"d2l"+idx} x1={sbi.x} y1={sbi.y} x2={sci.x} y2={sci.y} stroke={CL.blue} strokeWidth={2} opacity={0.35} strokeLinecap="round"/>);
+      });
+    }
+    if(L.HC&&L.HR){const s1=toS(L.HC),s2=toS(L.HR);gc.push(<line key="gl2" x1={s1.x} y1={s1.y} x2={s2.x} y2={s2.y} stroke={CL.gray} strokeWidth={2.5} strokeDasharray="8 5"/>);}
+    el.push(<g key="acon" opacity={0.7}>{gc}</g>);
+  }
+
+  // Static 4 configs (graphical)
+  if(L.ok&&showCfg&&!anim&&tab==="graphical"){
+    const cg=[];
+    [0,1,2,3].forEach(idx=>{
+      const s1=toS(L.HC),s2=toS(L.A[idx]),s3=toS(pts[idx]);
+      cg.push(<line key={"cl"+idx} x1={s1.x} y1={s1.y} x2={s2.x} y2={s2.y} stroke={CL.blue} strokeWidth={2} opacity={0.3}/>);
+      cg.push(<line key={"cc"+idx} x1={s2.x} y1={s2.y} x2={s3.x} y2={s3.y} stroke={CL.green} strokeWidth={2} opacity={0.3}/>);
+      if(L.B&&L.B[idx]){const s4=toS(L.B[idx]),s5=toS(L.HR);
+        cg.push(<line key={"cab"+idx} x1={s2.x} y1={s2.y} x2={s4.x} y2={s4.y} stroke={CL.green} strokeWidth={1.5} opacity={0.25}/>);
+        cg.push(<line key={"cf"+idx} x1={s5.x} y1={s5.y} x2={s4.x} y2={s4.y} stroke={CL.amber} strokeWidth={2} opacity={0.3}/>);}
+    });
+    el.push(<g key="cfg">{cg}</g>);
+  }
+
+  // Coupler curve
+  if(showPath&&curve.length>2){
+    el.push(<polyline key="cv" points={curve.map(p=>{const s=toS(p);return s.x+","+s.y;}).join(" ")} fill="none" stroke={CL.pink} strokeWidth={3} opacity={0.75} strokeLinejoin="round"/>);
+  }
+
+  // Animated linkage
+  if(L.ok&&curPos){
+    const sa=toS(curPos.A),sb=toS(curPos.B),sc=toS(curPos.C),shc=toS(L.HC),shr=toS(L.HR);
+    el.push(<g key="lnk">
+      <polygon points={`${sa.x},${sa.y} ${sb.x},${sb.y} ${sc.x},${sc.y}`} fill="rgba(34,197,94,0.12)" stroke="rgba(34,197,94,0.4)" strokeWidth={1.5}/>
+      <line x1={shc.x} y1={shc.y} x2={sa.x} y2={sa.y} stroke={CL.blue} strokeWidth={7} strokeLinecap="round" opacity={0.9}/>
+      <line x1={sa.x} y1={sa.y} x2={sc.x} y2={sc.y} stroke={CL.green} strokeWidth={5} strokeLinecap="round" opacity={0.9}/>
+      <line x1={sa.x} y1={sa.y} x2={sb.x} y2={sb.y} stroke={CL.green} strokeWidth={5} strokeLinecap="round" opacity={0.9}/>
+      <line x1={sb.x} y1={sb.y} x2={sc.x} y2={sc.y} stroke="#15803d" strokeWidth={3} strokeLinecap="round" opacity={0.8}/>
+      <line x1={shr.x} y1={shr.y} x2={sb.x} y2={sb.y} stroke={CL.amber} strokeWidth={7} strokeLinecap="round" opacity={0.9}/>
+      {[curPos.A,curPos.B].map((p,i)=>{const s=toS(p);return <g key={"j"+i}><circle cx={s.x} cy={s.y} r={7} fill="#fff" stroke="#333" strokeWidth={2.5}/><circle cx={s.x} cy={s.y} r={2.5} fill="#333"/></g>;})}
+      {(()=>{const s=toS(curPos.C);return <g key="jc"><circle cx={s.x} cy={s.y} r={6} fill={CL.pink} stroke="#fff" strokeWidth={2.5}/><text x={s.x+12} y={s.y-10} fontSize="16" fill={CL.pink} fontWeight="700" fontStyle="italic" fontFamily="serif">C</text></g>;})()}
+    </g>);
+  }
+
+  // Fixed pivots
+  if(L.ok){
+    [[L.HC,CL.blue,"Hᴄ"],[L.HR,CL.amber,"Hᵣ"]].forEach(([p,col,lbl],ki)=>{
+      if(!p)return;const s=toS(p);
+      el.push(<g key={"gp"+ki}>
+        <circle cx={s.x} cy={s.y} r={11} fill="#fff" stroke={col} strokeWidth={3}/>
+        <circle cx={s.x} cy={s.y} r={4.5} fill={col}/>
+        <line x1={s.x-15} y1={s.y+16} x2={s.x+15} y2={s.y+16} stroke={col} strokeWidth={2.5}/>
+        {[-10,-5,0,5,10].map((dx,k)=><line key={k} x1={s.x+dx} y1={s.y+16} x2={s.x+dx-5} y2={s.y+22} stroke={col} strokeWidth={1.5}/>)}
+        <text x={s.x+16} y={s.y-14} fontSize="17" fill={col} fontWeight="700" fontStyle="italic" fontFamily="serif">{lbl}</text>
+      </g>);
+    });
+  }
+
+  // Precision points (draggable)
+  pts.forEach((p,idx)=>{const s=toS(p);
+    el.push(<g key={"pp"+idx} style={{cursor:"grab"}}>
+      <circle cx={s.x} cy={s.y} r={18} fill="transparent" onMouseDown={e=>{e.preventDefault();setDrag(idx);}} onTouchStart={e=>{e.preventDefault();setDrag(idx);}}/>
+      <circle cx={s.x} cy={s.y} r={8} fill={CL.red} stroke="#fff" strokeWidth={2.5} style={{pointerEvents:"none"}}/>
+      <text x={s.x+12} y={s.y-12} fontSize="16" fill={CL.red} fontWeight="700" fontStyle="italic" fontFamily="serif" style={{pointerEvents:"none"}}>{PL[idx]}</text>
+    </g>);
+  });
+
+  // ================================================================
+  // RENDER
+  // ================================================================
+  return (
+    <div style={{height:"100vh",display:"flex",flexDirection:"column",background:"#f5f5f0",fontFamily:"'Segoe UI','Helvetica Neue',Arial,sans-serif",color:"#1a1a1a"}}>
+      {/* Header */}
+      <div style={{padding:"8px 20px",borderBottom:"2px solid #ddd",display:"flex",alignItems:"center",gap:12,background:"#fff",flexShrink:0}}>
+        <div style={{width:40,height:40,borderRadius:8,background:"linear-gradient(135deg,#2563eb,#16a34a)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:16,color:"#fff"}}>4B</div>
+        <div>
+          <div style={{fontWeight:700,fontSize:18}}>Four-Bar Linkage Synthesis</div>
+          <div style={{fontSize:12,color:"#666",textTransform:"uppercase",letterSpacing:0.5}}>ME252 - THEORY OF MECHANISM AND MACHINES | PROFESSOR - ANUPAM SAXENA</div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",borderBottom:"2px solid #ddd",background:"#fff",flexShrink:0}}>
+        {[["graphical","Graphical Method"],["analytical","Analytical Method (Burmester)"]].map(([k,v])=>
+          <button key={k} onClick={()=>{setTab(k);setAnim(false);setTheta(0);}} style={{flex:1,padding:"11px 16px",textAlign:"center",fontSize:14,fontWeight:600,
+            borderBottom:tab===k?"3px solid #2563eb":"3px solid transparent",color:tab===k?"#2563eb":"#888",
+            background:tab===k?"#f0f7ff":"transparent",border:"none",cursor:"pointer"}}>{v}</button>
+        )}
+      </div>
+
+      <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+        {/* Canvas */}
+        <div style={{flex:1,position:"relative",minWidth:0,background:"#fafaf8"}}>
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${HH}`} style={{width:"100%",height:"100%",display:"block"}}
+            onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onTouchMove={onMove} onTouchEnd={onUp}>
+            {el}
+          </svg>
+          {L.err&&<div style={{position:"absolute",bottom:14,left:14,right:14,background:"#fef2f2",border:"2px solid #fca5a5",borderRadius:8,padding:"10px 14px",fontSize:14,color:"#991b1b",fontWeight:600}}>
+            {"⚠ "+L.err}</div>}
+        </div>
+
+        {/* Panel */}
+        <div style={{width:350,flexShrink:0,borderLeft:"2px solid #ddd",overflowY:"auto",background:"#fff",padding:"14px 16px"}}>
+          {/* Precision Points (shared) */}
+          <Sec t="Precision Points (drag or type)">
+            <div style={{display:"grid",gridTemplateColumns:"auto 1fr 1fr",gap:"5px 8px",alignItems:"center"}}>
+              {pts.flatMap((p,i)=>[
+                <span key={"l"+i} style={{color:CL.red,fontWeight:700,fontSize:15,fontFamily:"serif",fontStyle:"italic"}}>{PL[i]}</span>,
+                <div key={"x"+i} style={{display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:12,color:"#888"}}>x:</span>
+                  <input type="number" value={parseFloat(p.x.toFixed(2))} step={0.1} onChange={e=>setPtC(i,"x",parseFloat(e.target.value)||0)} style={numStyle}/>
+                </div>,
+                <div key={"y"+i} style={{display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:12,color:"#888"}}>y:</span>
+                  <input type="number" value={parseFloat(p.y.toFixed(2))} step={0.1} onChange={e=>setPtC(i,"y",parseFloat(e.target.value)||0)} style={numStyle}/>
+                </div>,
+              ])}
+            </div>
+          </Sec>
+
+          {/* GRAPHICAL PANEL */}
+          {tab==="graphical"&&<>
+            <Sec t="Pair Selection">
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {PLBL.map((l,i)=><Btn key={i} active={i===pidx} onClick={()=>setPidx(i)}>{l}</Btn>)}
+              </div>
+            </Sec>
+            <Sec t="Design Parameters">
+              <Sld l="Hᵣ position (t)" v={hrT} mn={-12} mx={12} s={0.1} f={setHrT}/>
+              <Sld l="Radius R" v={R} mn={0.5} mx={18} s={0.1} f={setR}/>
+              <Sld l="Radius r (coupler)" v={r} mn={0.5} mx={18} s={0.1} f={setRr}/>
+              <Sld l="Hᴄ position (s)" v={hcT} mn={-18} mx={18} s={0.1} f={setHcT}/>
+            </Sec>
+            <Sec t="Solution Branches">
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4}}>
+                {["A_i","A_j","A_k₁","A_k₂"].map((l,i)=>
+                  <Btn key={i} active={br[i]===1} onClick={()=>toggleBr(i)} small>{l}: {br[i]}</Btn>)}
+              </div>
+            </Sec>
+          </>}
+
+          {/* ANALYTICAL PANEL */}
+          {tab==="analytical"&&<>
+            <Sec t="Generation Type">
+              <div style={{display:"flex",gap:5}}>
+                <Btn active={mode==="path"} onClick={()=>setMode("path")}>Path Generation</Btn>
+                <Btn active={mode==="motion"} onClick={()=>setMode("motion")}>Motion Generation</Btn>
+              </div>
+              <div style={{fontSize:11,color:"#888",marginTop:6,lineHeight:1.5}}>
+                {mode==="path"?"Path: φ values are crank angles (free choices). Coupler point traces through precision points.":
+                "Motion: φ values are coupler orientations (prescribed). Coupler body maintains specific angles at each position."}
+              </div>
+            </Sec>
+            <Sec t={mode==="path"?"φ Angles (crank — free choices, degrees)":"φ Angles (coupler orientations — prescribed, degrees)"}>
+              {mode==="path"?<>
+                <Sld l={"φ₂"} v={phiDeg[0]} mn={0} mx={180} s={1} f={v=>setPhiAt(0,v)}/>
+                <Sld l={"φ₃"} v={phiDeg[1]} mn={0} mx={180} s={1} f={v=>setPhiAt(1,v)}/>
+                <Sld l={"φ₄"} v={phiDeg[2]} mn={0} mx={180} s={1} f={v=>setPhiAt(2,v)}/>
+              </>:<>
+                {[0,1,2].map(i=><div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                  <span style={{fontSize:13,fontWeight:600,width:24}}>{"φ"+(i+2)}</span>
+                  <input type="number" value={phiDeg[i]} step={1} onChange={e=>setPhiAt(i,parseFloat(e.target.value)||0)} style={{...numStyle,width:80}}/>
+                  <span style={{fontSize:11,color:"#888"}}>deg</span>
+                </div>)}
+              </>}
+            </Sec>
+            <Sec t="Dyad Free Choices (γ₂, degrees)">
+              <Sld l={"γ₂ Dyad 1"} v={gam2_1} mn={0} mx={360} s={1} f={setGam2_1}/>
+              <Sld l={"γ₂ Dyad 2"} v={gam2_2} mn={0} mx={360} s={1} f={setGam2_2}/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginTop:4}}>
+                <Btn active={abr1===1} onClick={()=>setAbr1(v=>1-v)} small>γ₃ branch D1: {abr1}</Btn>
+                <Btn active={abr2===1} onClick={()=>setAbr2(v=>1-v)} small>γ₃ branch D2: {abr2}</Btn>
+              </div>
+            </Sec>
+          </>}
+
+          {/* Display (shared) */}
+          <Sec t="Display">
+            <Tg l="Construction lines" v={showCon} f={setShowCon}/>
+            {tab==="graphical"&&<Tg l="Construction circles" v={showCirc} f={setShowCirc}/>}
+            <Tg l="Coupler curve" v={showPath} f={setShowPath}/>
+            <Tg l="4 configurations" v={showCfg} f={setShowCfg}/>
+          </Sec>
+
+          {/* Animation (shared) */}
+          <Sec t="Animation">
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <button onClick={()=>setAnim(!anim)} style={{flex:1,padding:"10px",fontSize:14,fontWeight:700,borderRadius:6,
+                background:anim?"#fef2f2":"#eff6ff",border:"1.5px solid "+(anim?"#ef4444":"#2563eb"),color:anim?"#dc2626":"#2563eb",cursor:"pointer"}}>
+                {anim?"⏹ Stop":"▶ Animate"}</button>
+            </div>
+            <Sld l="Crank angle θ" v={theta} mn={0} mx={Math.PI*2} s={0.02} f={setTheta}/>
+            <div style={{display:"flex",gap:5}}>
+              <Btn active={asmb===0} onClick={()=>setAsmb(0)}>Assembly 1</Btn>
+              <Btn active={asmb===1} onClick={()=>setAsmb(1)}>Assembly 2</Btn>
+            </div>
+            {L.ok&&curPos&&<div style={{marginTop:8,fontFamily:"monospace",fontSize:13,lineHeight:1.8,color:"#555"}}>
+              <div>A = ({curPos.A.x.toFixed(2)}, {curPos.A.y.toFixed(2)})</div>
+              <div>B = ({curPos.B.x.toFixed(2)}, {curPos.B.y.toFixed(2)})</div>
+              <div style={{color:CL.pink,fontWeight:600}}>C = ({curPos.C.x.toFixed(2)}, {curPos.C.y.toFixed(2)})</div>
+            </div>}
+          </Sec>
+
+          {/* Link Lengths */}
+          {L.ok&&<Sec t="Link Lengths">
+            <div style={{fontFamily:"monospace",fontSize:13,lineHeight:2}}>
+              <RW l="Ground |Hᴄ–Hᵣ|" v={L.gnd.toFixed(3)} c={CL.gray}/>
+              <RW l="Crank |Hᴄ–A|" v={L.crankR.toFixed(3)} c={CL.blue}/>
+              <RW l="Coupler |A–B|" v={L.cAB.toFixed(3)} c={CL.green}/>
+              <RW l="Follower |Hᵣ–B|" v={L.fR.toFixed(3)} c={CL.amber}/>
+            </div>
+          </Sec>}
+
+          {/* Legend */}
+          <Sec t="Legend">
+            <div style={{display:"flex",flexDirection:"column",gap:5,fontSize:13}}>
+              <LI c={CL.red} l={"C₁–C₄: Precision points"}/><LI c={CL.blue} l="Crank: Hᴄ → A"/>
+              <LI c={CL.green} l="Coupler triangle: A–B–C"/><LI c={CL.amber} l="Follower: Hᵣ → B"/>
+              <LI c={CL.pink} l="Coupler curve (path of C)"/>
+              {tab==="graphical"&&<><LI c={CL.purple} l="Mid-normal c₁₃"/><LI c={CL.sky} l="Mid-normal a₁₃"/></>}
+              {tab==="analytical"&&<><LI c={CL.red} l="Dyad 1 configurations"/><LI c={CL.blue} l="Dyad 2 configurations"/></>}
+            </div>
+          </Sec>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// UI COMPONENTS
+// ================================================================
+function Sec({t,children}){return<div style={{marginBottom:16}}><div style={{fontSize:14,fontWeight:700,color:"#333",marginBottom:6,borderBottom:"1px solid #eee",paddingBottom:4}}>{t}</div>{children}</div>;}
+function Sld({l,v,mn,mx,s,f}){return<div style={{marginBottom:6}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"#555",marginBottom:2}}><span>{l}</span><span style={{fontFamily:"monospace",color:"#222",fontWeight:600}}>{v.toFixed(s>=1?0:2)}</span></div><input type="range" min={mn} max={mx} step={s} value={v} onChange={e=>f(parseFloat(e.target.value))} style={{width:"100%",accentColor:"#2563eb",height:5}}/></div>;}
+function Btn({children,active,onClick,small}){return<button onClick={onClick} style={{padding:small?"3px 8px":"5px 11px",borderRadius:5,border:"1.5px solid "+(active?"#2563eb":"#ccc"),background:active?"#e8f0fe":"#fff",color:active?"#1a56db":"#555",cursor:"pointer",fontSize:small?11:12,fontWeight:600,whiteSpace:"nowrap"}}>{children}</button>;}
+function Tg({l,v,f}){return<label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,marginBottom:5}}><div onClick={()=>f(!v)} style={{width:36,height:20,borderRadius:10,background:v?"#2563eb":"#d4d4d4",position:"relative",cursor:"pointer",flexShrink:0}}><div style={{width:16,height:16,borderRadius:8,background:"#fff",position:"absolute",top:2,left:v?18:2,transition:"left 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/></div><span style={{color:"#333"}}>{l}</span></label>;}
+function RW({l,v,c}){return<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:c||"#555"}}>{l}</span><span style={{color:"#111",fontWeight:600}}>{v}</span></div>;}
+function LI({c,l}){return<div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:14,height:14,borderRadius:3,background:c,flexShrink:0,border:"1px solid rgba(0,0,0,0.1)"}}/><span style={{color:"#444"}}>{l}</span></div>;}
+
+const numStyle={width:70,padding:"4px 6px",border:"1px solid #ccc",borderRadius:4,fontSize:13,fontFamily:"'Consolas',monospace",background:"#fff",color:"#1a1a1a",textAlign:"right"};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
